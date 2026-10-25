@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { getUnifiedDashboardHomeService } from "./dashboardReport.service.js";
 import {
   getReceivablesSummaryService,
@@ -235,11 +236,23 @@ export async function getDayBookController(req, res, next) {
 // ─── 6. Ledger Account Statement Drill-Down ───────────────────────────────────
 export async function getLedgerStatementController(req, res, next) {
   try {
-    const companyId = resolveReqCompanyId(req);
-    const ledgerId = req.params.ledgerId || req.query.ledgerId || req.query.ledger_id;
+    let companyId = resolveReqCompanyId(req);
+    let ledgerId = req.params.ledgerId || req.query.ledgerId || req.query.ledger_id;
+    let ledgerName = req.params.ledgerName || req.params.ledger_name || req.query.ledger_name || req.query.party_name;
+
+    // Support legacy path pattern: /ledger/statement/:ledgerName?company_id=:companyId
+    if (req.params.companyId && !mongoose.Types.ObjectId.isValid(req.params.companyId)) {
+      if (req.query.company_id || req.query.companyId) {
+        ledgerName = req.params.companyId;
+        companyId = req.query.company_id || req.query.companyId;
+      }
+    }
+
     const data = await getLedgerStatementReportService({
       companyId,
       ledgerId,
+      ledger_name: ledgerName,
+      ledgerName,
       ...req.query,
       ...req.body,
     });

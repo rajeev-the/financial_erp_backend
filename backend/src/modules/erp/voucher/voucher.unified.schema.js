@@ -11,7 +11,7 @@ export const ALLOWED_GST_RATES = [0, 0.25, 1.5, 3, 5, 12, 18, 28];
  */
 export const VOUCHER_TYPE_MATRIX = {
   SALES: {
-    party: "R",
+    party: "*69R",
     items: "R",
     gst: "R",
     supplierInvoice: "F",
@@ -90,6 +90,96 @@ export const VOUCHER_TYPE_MATRIX = {
     originalVoucher: "F",
     transfer: "F",
   },
+  STOCK_JOURNAL: {
+    party: "O",
+    items: "O",
+    gst: "O",
+    supplierInvoice: "F",
+    allocations: "O",
+    payment: "F",
+    originalVoucher: "F",
+    transfer: "O",
+  },
+  DELIVERY_NOTE: {
+    party: "R",
+    items: "R",
+    gst: "O",
+    supplierInvoice: "F",
+    allocations: "O",
+    payment: "F",
+    originalVoucher: "F",
+    transfer: "F",
+  },
+  RECEIPT_NOTE: {
+    party: "R",
+    items: "R",
+    gst: "O",
+    supplierInvoice: "O",
+    allocations: "O",
+    payment: "F",
+    originalVoucher: "F",
+    transfer: "F",
+  },
+  SALES_ORDER: {
+    party: "R",
+    items: "R",
+    gst: "O",
+    supplierInvoice: "F",
+    allocations: "O",
+    payment: "F",
+    originalVoucher: "F",
+    transfer: "F",
+  },
+  PURCHASE_ORDER: {
+    party: "R",
+    items: "R",
+    gst: "O",
+    supplierInvoice: "F",
+    allocations: "O",
+    payment: "F",
+    originalVoucher: "F",
+    transfer: "F",
+  },
+  PHYSICAL_STOCK: {
+    party: "F",
+    items: "R",
+    gst: "F",
+    supplierInvoice: "F",
+    allocations: "F",
+    payment: "F",
+    originalVoucher: "F",
+    transfer: "F",
+  },
+  MEMORANDUM: {
+    party: "O",
+    items: "O",
+    gst: "O",
+    supplierInvoice: "F",
+    allocations: "O",
+    payment: "O",
+    originalVoucher: "F",
+    transfer: "O",
+  },
+  REVERSING_JOURNAL: {
+    party: "O",
+    items: "O",
+    gst: "O",
+    supplierInvoice: "F",
+    allocations: "O",
+    payment: "O",
+    originalVoucher: "F",
+    transfer: "O",
+  },
+  OTHER: {
+    party: "O",
+    items: "O",
+    gst: "O",
+    supplierInvoice: "O",
+    allocations: "O",
+    payment: "O",
+    originalVoucher: "O",
+    transfer: "O",
+  },
 };
 
 // ----------------------------------------------------
@@ -142,8 +232,8 @@ const itemLineSchema = new Schema(
     taxableValue: { type: Number, required: true, min: 0 }, // Paise
     taxRate: {
       type: Number,
-      required: true,
-      enum: ALLOWED_GST_RATES,
+      default: 0,
+      min: 0,
     },
     cgst: { type: Number, default: 0, min: 0 }, // Paise
     sgst: { type: Number, default: 0, min: 0 }, // Paise
@@ -151,6 +241,47 @@ const itemLineSchema = new Schema(
     cess: { type: Number, default: 0, min: 0 }, // Paise
     total: { type: Number, required: true, min: 0 }, // Paise
     itcEligible: { type: Boolean, default: true },
+    godown: { type: String, trim: true, default: null },
+    batch: { type: String, trim: true, default: null },
+    expiryDate: { type: String, trim: true, default: null },
+    mfgDate: { type: String, trim: true, default: null },
+  },
+  { _id: false }
+);
+
+const billAllocationSchema = new Schema(
+  {
+    billType: {
+      type: String,
+      enum: ["Agst Ref", "New Ref", "Advance", "On Account"],
+      default: "New Ref",
+    },
+    billName: { type: String, required: true, trim: true },
+    amount: { type: Number, required: true }, // Paise
+    dueDate: {
+      type: String,
+      match: [/^\d{4}-\d{2}-\d{2}$/, "dueDate must be in YYYY-MM-DD format"],
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
+const costCentreSchema = new Schema(
+  {
+    costCentreId: { type: Schema.Types.ObjectId, default: null },
+    name: { type: String, required: true, trim: true },
+    amount: { type: Number, required: true }, // Paise
+  },
+  { _id: false }
+);
+
+const tdsAllocationSchema = new Schema(
+  {
+    natureOfPayment: { type: String, trim: true, default: null },
+    rate: { type: Number, default: 0 },
+    amount: { type: Number, default: 0 },
+    isSpecialRate: { type: Boolean, default: false },
   },
   { _id: false }
 );
@@ -161,6 +292,10 @@ const entryLineSchema = new Schema(
     name: { type: String, required: true, trim: true },
     debit: { type: Number, required: true, min: 0, default: 0 }, // Paise
     credit: { type: Number, required: true, min: 0, default: 0 }, // Paise
+    isPartyLedger: { type: Boolean, default: false },
+    billAllocations: { type: [billAllocationSchema], default: undefined },
+    costCentres: { type: [costCentreSchema], default: undefined },
+    tds: { type: tdsAllocationSchema, default: null },
   },
   { _id: false }
 );
@@ -245,6 +380,9 @@ const syncBlockSchema = new Schema(
     tallyGuid: { type: String, trim: true, default: null },
     tallyMasterId: { type: Number, default: null },
     tallyAlterId: { type: Number, default: null },
+    tallyVoucherType: { type: String, trim: true, default: null },
+    isDeletedInTally: { type: Boolean, default: false },
+    balanceMismatch: { type: Boolean, default: false },
     tallyExtras: { type: Schema.Types.Mixed, default: {} },
   },
   { _id: false }
@@ -270,9 +408,8 @@ const unifiedVoucherSchema = new Schema(
     },
     voucherNumber: {
       type: String,
-      required: [true, "voucherNumber is required"],
-      maxlength: [16, "Voucher number cannot exceed 16 characters"],
       trim: true,
+      default: "",
     },
     financialYear: {
       type: String,
@@ -311,6 +448,17 @@ const unifiedVoucherSchema = new Schema(
       type: String,
       trim: true,
       default: null,
+    },
+
+    // Extra Tally / Multicurrency / Reference fields
+    tallyVoucherType: { type: String, trim: true, default: null },
+    isOptional: { type: Boolean, default: false },
+    currency: { type: String, default: "INR", trim: true },
+    exchangeRate: { type: Number, default: 1, min: 0 },
+    placeOfSupply: { type: String, trim: true, default: null },
+    reference: {
+      number: { type: String, trim: true, default: null },
+      date: { type: String, default: null },
     },
 
     // Specialized Blocks
@@ -364,7 +512,7 @@ const unifiedVoucherSchema = new Schema(
 
 unifiedVoucherSchema.index(
   { companyId: 1, voucherType: 1, financialYear: 1, voucherNumber: 1 },
-  { unique: true }
+  { unique: true, partialFilterExpression: { "sync.source": "APP_DIRECT" } }
 );
 unifiedVoucherSchema.index({ companyId: 1, date: 1 });
 unifiedVoucherSchema.index({ companyId: 1, "entries.ledgerId": 1, date: 1 });
@@ -373,16 +521,27 @@ unifiedVoucherSchema.index(
   { companyId: 1, idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: "string" } } }
 );
-unifiedVoucherSchema.index({ companyId: 1, "sync.tallyGuid": 1 }, { sparse: true });
+unifiedVoucherSchema.index(
+  { companyId: 1, "sync.tallyGuid": 1 },
+  { unique: true, partialFilterExpression: { "sync.tallyGuid": { $type: "string" } } }
+);
 
 // ----------------------------------------------------
 // Validation Hook: Type Matrix & Debit == Credit
 // ----------------------------------------------------
 
 unifiedVoucherSchema.pre("validate", function () {
-  // 1. Skip heavy validation for DRAFT status
-  if (this.status === "DRAFT") {
+  // 1. Skip heavy validation for DRAFT or TALLY_SYNC status
+  if (this.status === "DRAFT" || this.sync?.source === "TALLY_SYNC") {
     return;
+  }
+
+  // Enforce voucherNumber constraint on APP_DIRECT vouchers
+  if (!this.voucherNumber) {
+    throw new Error("voucherNumber is required for APP_DIRECT vouchers");
+  }
+  if (this.voucherNumber.length > 32) {
+    throw new Error("voucherNumber cannot exceed 32 characters");
   }
 
   const vType = this.voucherType;

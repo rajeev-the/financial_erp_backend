@@ -38,6 +38,12 @@ export async function getDayBookReportService(params = {}) {
     voucherType,
     voucher_type,
     type,
+    voucherIds,
+    voucher_ids,
+    ledgerId,
+    ledger_id,
+    partyName,
+    party_name,
     search,
     q,
     voucherNumber,
@@ -104,6 +110,33 @@ export async function getDayBookReportService(params = {}) {
       { "party.gstin": new RegExp(searchKeyword, "i") },
       { narration: new RegExp(searchKeyword, "i") },
     ];
+  }
+
+  // Voucher IDs filter (for party drill-down)
+  const rawVoucherIds = voucherIds || voucher_ids;
+  if (Array.isArray(rawVoucherIds) && rawVoucherIds.length > 0) {
+    const validOids = rawVoucherIds
+      .filter((id) => id && mongoose.Types.ObjectId.isValid(String(id)))
+      .map((id) => new mongoose.Types.ObjectId(String(id)));
+    if (validOids.length > 0) {
+      filter._id = { $in: validOids };
+    }
+  }
+
+  // Ledger ID filter
+  const targetLedgerId = ledgerId || ledger_id;
+  if (targetLedgerId && mongoose.Types.ObjectId.isValid(String(targetLedgerId))) {
+    const lOid = new mongoose.Types.ObjectId(String(targetLedgerId));
+    filter.$or = [
+      { "party.ledgerId": lOid },
+      { "entries.ledgerId": lOid },
+    ];
+  }
+
+  // Party Name filter
+  const targetPartyName = (partyName || party_name || "").trim();
+  if (targetPartyName) {
+    filter["party.name"] = new RegExp(targetPartyName, "i");
   }
 
   // Min / Max Grand Total filters (DB stores in paise)
@@ -243,5 +276,6 @@ export async function getDayBookReportService(params = {}) {
       totalPages: take > 0 ? Math.ceil(total / take) : 1,
     },
     vouchers: formattedVouchers,
+    data: formattedVouchers,
   };
 }

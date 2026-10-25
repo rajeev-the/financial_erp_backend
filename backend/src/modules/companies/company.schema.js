@@ -110,6 +110,12 @@ const companySchema = new Schema(
       type: Number,
       default: null,
     },
+    syncCheckpoints: {
+      voucher: { type: Number, default: 0 },
+      ledger: { type: Number, default: 0 },
+      group: { type: Number, default: 0 },
+      stock: { type: Number, default: 0 },
+    },
     ...commonFields,
     version: {
       type: versionSchema,

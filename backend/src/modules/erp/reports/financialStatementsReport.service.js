@@ -216,14 +216,14 @@ export async function getBalanceSheetReportService(params = {}) {
     const dr = p ? p.totalDebit / 100 : 0;
     const cr = p ? p.totalCredit / 100 : 0;
 
-    // In Tally: raw opening < 0 is Debit, raw opening > 0 is Credit
     const rawOpening = l.openingBalance || 0;
-    const isBaseDebit = rawOpening < 0;
-    const baseOpeningDr = isBaseDebit ? Math.abs(rawOpening) : -Math.abs(rawOpening);
+    const isLiability = buckets.creditorLedgerIds.has(id) || buckets.capitalLedgerIds.has(id) || buckets.loanLedgerIds.has(id) || buckets.liabilityLedgerIds.has(id);
+    const baseOpeningDr = !isLiability ? (rawOpening > 0 ? rawOpening : 0) : (rawOpening < 0 ? Math.abs(rawOpening) : 0);
+    const baseOpeningCr = isLiability ? (rawOpening > 0 ? rawOpening : 0) : (rawOpening < 0 ? Math.abs(rawOpening) : 0);
 
-    // Net closing in Debit terms:
-    const netDr = baseOpeningDr + (dr - cr);
-    const netCr = -netDr;
+    // Net closing:
+    const netDr = (baseOpeningDr + dr) - (baseOpeningCr + cr);
+    const netCr = (baseOpeningCr + cr) - (baseOpeningDr + dr);
 
     if (buckets.capitalLedgerIds.has(id)) {
       capitalTotal += Math.max(0, netCr);
@@ -374,11 +374,19 @@ export async function getTrialBalanceReportService(params = {}) {
 
   const groupBucketsMap = new Map();
 
+  let catSalesCr = 0, catSalesDr = 0;
+  let catPurchDr = 0, catPurchCr = 0;
+  let catExpDr = 0, catExpCr = 0;
+  let catDebtorCloseDr = 0, catDebtorCloseCr = 0;
+  let catCreditorCloseDr = 0, catCreditorCloseCr = 0;
+  let catBankCloseDr = 0, catBankCloseCr = 0;
+  let catCashCloseDr = 0, catCashCloseCr = 0;
+
   for (const [id, l] of buckets.ledgerMap.entries()) {
     const rawOpening = l.openingBalance || 0;
-    const isBaseDebit = rawOpening < 0;
-    const baseDr = isBaseDebit ? Math.abs(rawOpening) : 0;
-    const baseCr = !isBaseDebit ? Math.abs(rawOpening) : 0;
+    const isLiability = buckets.creditorLedgerIds.has(id) || buckets.capitalLedgerIds.has(id) || buckets.loanLedgerIds.has(id) || buckets.liabilityLedgerIds.has(id);
+    const baseDr = !isLiability ? (rawOpening > 0 ? rawOpening : 0) : (rawOpening < 0 ? Math.abs(rawOpening) : 0);
+    const baseCr = isLiability ? (rawOpening > 0 ? rawOpening : 0) : (rawOpening < 0 ? Math.abs(rawOpening) : 0);
 
     const prior = priorDeltaMap.get(id) || { dr: 0, cr: 0 };
     const netOpen = (baseDr + prior.dr) - (baseCr + prior.cr);
@@ -397,10 +405,43 @@ export async function getTrialBalanceReportService(params = {}) {
     grandTotalClosingDr += closeDr;
     grandTotalClosingCr += closeCr;
 
+    // Track category totals matching Dashboard KPIs
+    let category = "Other";
+    if (buckets.salesLedgerIds.has(id)) {
+      category = "Sales Accounts";
+      catSalesCr += period.cr;
+      catSalesDr += period.dr;
+    } else if (buckets.purchaseLedgerIds.has(id)) {
+      category = "Purchase Accounts";
+      catPurchDr += period.dr;
+      catPurchCr += period.cr;
+    } else if (buckets.expenseLedgerIds.has(id) || buckets.directExpenseLedgerIds.has(id)) {
+      category = "Expenses";
+      catExpDr += period.dr;
+      catExpCr += period.cr;
+    } else if (buckets.debtorLedgerIds.has(id)) {
+      category = "Sundry Debtors";
+      catDebtorCloseDr += closeDr;
+      catDebtorCloseCr += closeCr;
+    } else if (buckets.creditorLedgerIds.has(id)) {
+      category = "Sundry Creditors";
+      catCreditorCloseDr += closeDr;
+      catCreditorCloseCr += closeCr;
+    } else if (buckets.bankLedgerIds.has(id)) {
+      category = "Bank Accounts";
+      catBankCloseDr += closeDr;
+      catBankCloseCr += closeCr;
+    } else if (buckets.cashLedgerIds.has(id)) {
+      category = "Cash-in-Hand";
+      catCashCloseDr += closeDr;
+      catCashCloseCr += closeCr;
+    }
+
     const groupName = l.parent || "Primary";
     if (!groupBucketsMap.has(groupName)) {
       groupBucketsMap.set(groupName, {
         groupName,
+        category,
         openingDr: 0,
         openingCr: 0,
         periodDr: 0,
@@ -423,6 +464,7 @@ export async function getTrialBalanceReportService(params = {}) {
       g.ledgers.push({
         id,
         name: l.name,
+        category,
         openingBalance: openDr > 0 ? { amount: round2(openDr), type: "Dr" } : { amount: round2(openCr), type: "Cr" },
         periodDebit: round2(period.dr),
         periodCredit: round2(period.cr),
@@ -433,6 +475,7 @@ export async function getTrialBalanceReportService(params = {}) {
 
   const groups = Array.from(groupBucketsMap.values()).map((g) => ({
     groupName: g.groupName,
+    category: g.category,
     openingDebit: round2(g.openingDr),
     openingCredit: round2(g.openingCr),
     periodDebit: round2(g.periodDr),
@@ -459,6 +502,18 @@ export async function getTrialBalanceReportService(params = {}) {
       closingDebit: round2(grandTotalClosingDr),
       closingCredit: round2(grandTotalClosingCr),
       isBalanced: Math.abs(grandTotalClosingDr - grandTotalClosingCr) < 5,
+      // High-level category reconciliation matching Dashboard Home
+      categories: {
+        revenue: round2(catSalesCr - catSalesDr),
+        purchase: round2(catPurchDr - catPurchCr),
+        expense: round2(catExpDr - catExpCr),
+        receivables: round2(catDebtorCloseDr),
+        netReceivables: round2(catDebtorCloseDr - catDebtorCloseCr),
+        payables: round2(catCreditorCloseCr),
+        netPayables: round2(catCreditorCloseCr - catCreditorCloseDr),
+        bankBalance: round2(catBankCloseDr - catBankCloseCr),
+        cashBalance: round2(catCashCloseDr - catCashCloseCr),
+      },
     },
     groups,
   };
@@ -590,6 +645,10 @@ export async function getGstSummaryReportService(params = {}) {
   }
 
   const netPayable = round2(totalOutputGst - totalInputGst);
+  const roundedOutput = round2(totalOutputGst);
+  const roundedInput = round2(totalInputGst);
+  const netTaxPayable = netPayable > 0 ? netPayable : 0;
+  const itcBalance = netPayable < 0 ? Math.abs(netPayable) : 0;
 
   return {
     company_id: targetCompanyId,
@@ -599,11 +658,32 @@ export async function getGstSummaryReportService(params = {}) {
       to_date: effectiveTo || null,
       fy: params.fy || params.financial_year || params.targetYear || null,
     },
+    total_output_tax: roundedOutput,
+    total_itc: roundedInput,
+    net_tax_payable: netTaxPayable,
+    itc_balance: itcBalance,
+    itc_efficiency: roundedOutput > 0 ? round2((roundedInput / roundedOutput) * 100) : 100.0,
+    liability_breakup: [
+      { label: "CGST Output", amount: round2(cgstOutput), value: round2(cgstOutput) },
+      { label: "SGST / UTGST Output", amount: round2(sgstOutput), value: round2(sgstOutput) },
+      { label: "IGST Output", amount: round2(igstOutput), value: round2(igstOutput) },
+      { label: "Other Taxes", amount: round2(otherOutput), value: round2(otherOutput) },
+    ],
+    itc_rows: [
+      { label: "CGST Input (ITC)", value: round2(cgstInput), type: "positive" },
+      { label: "SGST Input (ITC)", value: round2(sgstInput), type: "positive" },
+      { label: "IGST Input (ITC)", value: round2(igstInput), type: "positive" },
+      { label: "Other Input (ITC)", value: round2(otherInput), type: "positive" },
+    ],
+    returns: [
+      { name: "GSTR-1", title: "Outward Supplies", description: "Monthly sales & output tax liability" },
+      { name: "GSTR-3B", title: "Monthly Summary Return", description: "Summary return & tax payment" },
+    ],
     summary: {
-      totalOutputGst: round2(totalOutputGst),
-      totalInputGst: round2(totalInputGst),
-      netGstPayable: netPayable > 0 ? netPayable : 0,
-      itcBalance: netPayable < 0 ? Math.abs(netPayable) : 0,
+      totalOutputGst: roundedOutput,
+      totalInputGst: roundedInput,
+      netGstPayable: netTaxPayable,
+      itcBalance,
     },
     breakdown: {
       cgst: { output: round2(cgstOutput), input: round2(cgstInput), net: round2(cgstOutput - cgstInput) },
@@ -614,4 +694,5 @@ export async function getGstSummaryReportService(params = {}) {
     taxLedgers,
   };
 }
+
 

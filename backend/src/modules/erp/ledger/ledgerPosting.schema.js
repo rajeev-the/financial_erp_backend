@@ -52,6 +52,26 @@ const ledgerPostingSchema = new Schema(
       trim: true,
       default: null,
     },
+    billName: {
+      type: String,
+      trim: true,
+      default: null,
+      index: true,
+    },
+    billType: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    costCentreId: {
+      type: Schema.Types.ObjectId,
+      default: null,
+    },
+    isCancelled: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: false,
@@ -62,6 +82,7 @@ const ledgerPostingSchema = new Schema(
 
 ledgerPostingSchema.index({ companyId: 1, ledgerId: 1, date: 1 });
 ledgerPostingSchema.index({ companyId: 1, date: 1 });
+ledgerPostingSchema.index({ companyId: 1, voucherId: 1 });
 
 const LedgerPosting = model("LedgerPosting", ledgerPostingSchema);
 export default LedgerPosting;

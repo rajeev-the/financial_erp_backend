@@ -2,6 +2,7 @@ import Voucher from "./voucher.schema.js";
 import VoucherType from "./voucherType.schema.js";
 import LedgerEntry from "./ledgerentry.schema.js";
 import InventoryEntry from "./inventoryentry.schema.js";
+import UnifiedVoucher from "../../erp/voucher/voucher.unified.schema.js";
 import mongoose from "mongoose";
 import { ApiError } from "../../../utils/api-error.js";
 import { ok } from "../../../utils/response.js";
@@ -325,7 +326,7 @@ const getVoucherById = async (req, res, next) => {
       );
     }
 
-    const voucher = await Voucher.findOne(query)
+    let voucher = await Voucher.findOne(query)
       .populate("party_ledger_id", "name parent")
       .select(
         "-exchange_rate -is_active -is_approved -is_deleted -is_posted -is_reserved -alter_id -master_id -company_id -__v -created_at -updated_at",
@@ -333,7 +334,71 @@ const getVoucherById = async (req, res, next) => {
       .lean();
 
     if (!voucher) {
-      throw ApiError.notFound("Voucher not found");
+      // Fallback to UnifiedVoucher (Phase 4 compatibility)
+      const uVoucher = await UnifiedVoucher.findOne({
+        _id: query._id,
+        companyId: query.company_id,
+      }).lean();
+
+      if (!uVoucher) {
+        throw ApiError.notFound("Voucher not found");
+      }
+
+      const formattedVoucher = {
+        _id: uVoucher._id,
+        vchtype: uVoucher.voucherType,
+        voucher_number: uVoucher.voucherNumber,
+        date: new Date(uVoucher.date),
+        guid: uVoucher.sync?.tallyGuid || String(uVoucher._id),
+        party_ledger_id: uVoucher.party?.ledgerId || null,
+        party_ledger_name: uVoucher.party?.name || null,
+        narration: uVoucher.narration,
+        amount: (uVoucher.summary?.grandTotal || 0) / 100,
+      };
+
+      const ledgerentries = (uVoucher.entries || []).map((e) => ({
+        _id: new mongoose.Types.ObjectId(),
+        voucher_id: uVoucher._id,
+        ledger_id: e.ledgerId,
+        ledger_name: e.name,
+        ledger_parent: null,
+        amount: (e.debit || e.credit) / 100,
+        is_deemed_positive: (e.debit || 0) > 0,
+        is_party_ledger: !!e.isPartyLedger,
+        bills_allocation: (e.billAllocations || []).map((b) => ({
+          name: b.billName,
+          bill_type: b.billType,
+          amount: b.amount / 100,
+        })),
+      }));
+
+      const inventoryentries = (uVoucher.items || []).map((item) => ({
+        _id: new mongoose.Types.ObjectId(),
+        voucher_id: uVoucher._id,
+        stock_item_name: item.name,
+        quantity: item.qty ? String(item.qty) : null,
+        rate: item.rate ? String(item.rate / 100) : null,
+        unit_name: item.unit,
+        amount: item.total / 100,
+        discount_amount: (item.discount || 0) / 100,
+        discount_percentage: item.discountPct || 0,
+        godown_name: item.godown || null,
+        batch_name: item.batch || null,
+        expiry_date: item.expiryDate ? new Date(item.expiryDate) : null,
+        manufacturing_date: item.mfgDate ? new Date(item.mfgDate) : null,
+        hsn_code: item.hsn || null,
+        gst_rate: item.taxRate || 0,
+      }));
+
+      return ok(
+        res,
+        {
+          ...formattedVoucher,
+          ledgerentries,
+          inventoryentries,
+        },
+        "Voucher retrieved successfully",
+      );
     }
 
     const partyLedgerId = voucher.party_ledger_id?._id || voucher.party_ledger_id || null;

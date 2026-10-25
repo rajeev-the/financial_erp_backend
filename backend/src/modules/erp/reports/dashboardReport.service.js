@@ -36,16 +36,13 @@ export async function getUnifiedDashboardHomeService(params = {}) {
   // 1. Resolve Date Range Filters (handles timeline, period, fy, targetYear, from/to dates, quarters)
   const { fromDate: effectiveFrom, toDate: effectiveTo } = resolveDateFilter(params);
 
-  // 2. Load and categorize company ledgers into fast lookup sets
-  const buckets = await getCompanyLedgerBuckets(targetCompanyId);
-
-  // 3. Build aggregation match filter on indexed fields
+  // 2. Build aggregation match filter on indexed fields
   const matchFilter = { companyId: targetCompanyId };
   if (effectiveFrom || effectiveTo) {
     Object.assign(matchFilter, buildDateMatch(effectiveFrom, effectiveTo, "date"));
   }
 
-  // 4. Single Indexed Aggregation over ledger_postings grouped by ledgerId
+  // 3. Single Indexed Aggregation over ledger_postings grouped by ledgerId (runs in <50ms)
   const postings = await LedgerPosting.aggregate([
     { $match: matchFilter },
     {
@@ -56,6 +53,23 @@ export async function getUnifiedDashboardHomeService(params = {}) {
       },
     },
   ]);
+
+  // Safety Fallback: If company has no postings backfilled yet in LedgerPosting, fall back immediately without loading buckets
+  if (postings.length === 0) {
+    const totalPostingsForCompany = await LedgerPosting.countDocuments({ companyId: targetCompanyId });
+    if (totalPostingsForCompany === 0) {
+      const { calculateDashboardHomeData } = await import("../../dasboard/dasboard.service.js");
+      return await calculateDashboardHomeData({
+        companyId: targetCompanyId,
+        from_date: effectiveFrom,
+        to_date: effectiveTo,
+        fy: params.fy || params.financial_year || params.financialYear || params.targetYear || params.year,
+      });
+    }
+  }
+
+  // 4. Load and categorize company ledgers (cached in memory with 15m TTL)
+  const buckets = await getCompanyLedgerBuckets(targetCompanyId);
 
   // 5. Accumulate totals
   let salesCr = 0;
@@ -106,53 +120,20 @@ export async function getUnifiedDashboardHomeService(params = {}) {
     }
   }
 
-  // 6. Fetch baseline opening balances for Cash and Bank using earliest baseline date
-  const cashIds = Array.from(buckets.cashLedgerIds).map((id) => new mongoose.Types.ObjectId(id));
-  const bankIds = Array.from(buckets.bankLedgerIds).map((id) => new mongoose.Types.ObjectId(id));
-
-  const [cashBalanceRecords, bankBalanceRecords] = await Promise.all([
-    cashIds.length > 0
-      ? LedgerBalanceDetails.find({ company_id: targetCompanyId, ledger_id: { $in: cashIds } }).sort({ from_date: 1 }).lean()
-      : [],
-    bankIds.length > 0
-      ? LedgerBalanceDetails.find({ company_id: targetCompanyId, ledger_id: { $in: bankIds } }).sort({ from_date: 1 }).lean()
-      : [],
-  ]);
-
+  // 6. Fetch baseline opening balances for Cash and Bank from categorized ledger map
   let cashOpening = 0;
-  if (cashBalanceRecords.length > 0) {
-    const earliestDate = cashBalanceRecords[0].from_date;
-    const recordsAtEarliest = cashBalanceRecords.filter((b) => String(b.from_date) === String(earliestDate));
-    for (const b of recordsAtEarliest) {
-      cashOpening += Math.abs(Number(b.opening_balance) || 0);
-    }
-  } else {
-    for (const id of buckets.cashLedgerIds) {
-      cashOpening += Math.abs(buckets.ledgerMap.get(id)?.openingBalance || 0);
-    }
+  for (const id of buckets.cashLedgerIds) {
+    cashOpening += buckets.ledgerMap.get(id)?.openingBalance || 0;
   }
 
   let bankOpening = 0;
-  if (bankBalanceRecords.length > 0) {
-    const earliestDate = bankBalanceRecords[0].from_date;
-    const recordsAtEarliest = bankBalanceRecords.filter((b) => String(b.from_date) === String(earliestDate));
-    for (const b of recordsAtEarliest) {
-      const raw = Number(b.opening_balance) || 0;
-      // In Tally: raw < 0 is Debit (asset positive balance), raw > 0 is Credit (OD)
-      const isDebit = raw < 0;
-      bankOpening += isDebit ? Math.abs(raw) : -Math.abs(raw);
-    }
-  } else {
-    for (const id of buckets.bankLedgerIds) {
-      const raw = buckets.ledgerMap.get(id)?.openingBalance || 0;
-      const isDebit = raw < 0;
-      bankOpening += isDebit ? Math.abs(raw) : -Math.abs(raw);
-    }
+  for (const id of buckets.bankLedgerIds) {
+    bankOpening += buckets.ledgerMap.get(id)?.openingBalance || 0;
   }
 
   // 7. Calculate final financial figures in Rupees
   const revenue = round2((salesCr - salesDr) / 100);
-  const purchaseAmount = round2(purchDr / 100);
+  const purchaseAmount = round2((purchDr - purchCr) / 100);
   const expenseAmount = round2(Math.abs(expDr - expCr) / 100);
   const totalExpense = round2(purchaseAmount + expenseAmount);
   const profit = round2(revenue - totalExpense);

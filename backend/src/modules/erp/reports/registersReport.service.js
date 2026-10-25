@@ -89,19 +89,31 @@ export async function getMonthlyRegisterService(params = {}) {
     const monthInt = parseInt(m.monthNum, 10);
     // FY order: Apr(4)=0 ... Dec(12)=8, Jan(1)=9, Feb(2)=10, Mar(3)=11
     const fyIndex = monthInt >= 4 ? monthInt - 4 : monthInt + 8;
+    const grossAmt = (m.totalAmountPaise || 0) / 100;
+    const taxAmt = (m.totalTaxPaise || 0) / 100;
+    const netAmt = (m.totalSubtotalPaise || 0) / 100;
+    const yNum = parseInt((m.yearNum || m._id.split("-")[0]), 10);
+
     return {
       yearMonth: m._id,
       monthName: MONTH_NAMES[fyIndex] || m._id,
+      period: MONTH_NAMES[fyIndex] || m._id,
+      month: monthInt,
+      year: yNum,
       voucherCount: m.count,
-      grossAmount: (m.totalAmountPaise || 0) / 100,
-      taxAmount: (m.totalTaxPaise || 0) / 100,
-      netAmount: (m.totalSubtotalPaise || 0) / 100,
+      grossAmount: grossAmt,
+      taxAmount: taxAmt,
+      netAmount: netAmt,
+      debitAmount: targetVoucherType === "PURCHASE" ? grossAmt : 0,
+      creditAmount: targetVoucherType === "SALES" ? grossAmt : 0,
+      closingAmount: grossAmt,
     };
   });
 
   const totalGross = months.reduce((sum, m) => sum + m.grossAmount, 0);
   const totalTax = months.reduce((sum, m) => sum + m.taxAmount, 0);
   const totalVouchers = months.reduce((sum, m) => sum + m.voucherCount, 0);
+  const roundedGross = Math.round(totalGross * 100) / 100;
 
   return {
     company_id: targetCompanyId,
@@ -113,9 +125,15 @@ export async function getMonthlyRegisterService(params = {}) {
       fy: params.fy || params.financial_year || params.targetYear || null,
     },
     totalVouchers,
-    totalGrossAmount: Math.round(totalGross * 100) / 100,
+    totalGrossAmount: roundedGross,
     totalTaxAmount: Math.round(totalTax * 100) / 100,
+    totalClosingAmount: roundedGross,
+    totalCreditAmount: targetVoucherType === "SALES" ? roundedGross : 0,
+    totalDebitAmount: targetVoucherType === "PURCHASE" ? roundedGross : 0,
+    count: months.length,
     months,
+    items: months,
+    data: months,
   };
 }
 

@@ -16,7 +16,9 @@ erpVoucherRouter.post("/receipt", createReceiptVoucherController);
 erpVoucherRouter.post("/payment", createPaymentVoucherController);
 erpVoucherRouter.get("/unpaid", getUnpaidVouchersController);
 erpVoucherRouter.get("/", getVouchersListController);
+erpVoucherRouter.get("/:companyId/:id", getVoucherByIdController);
 erpVoucherRouter.get("/:id", getVoucherByIdController);
+erpVoucherRouter.post("/:companyId/:id/cancel", cancelVoucherController);
 erpVoucherRouter.post("/:id/cancel", cancelVoucherController);
 
 export default erpVoucherRouter;

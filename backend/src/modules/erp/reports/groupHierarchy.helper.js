@@ -1,5 +1,6 @@
 import Group from "../../tally/group/group.schema.js";
 import Ledger from "../../tally/ledger/ledger.schema.js";
+import LedgerBalanceDetails from "../../tally/ledger/ledgerBalanceDetails.schema.js";
 
 /**
  * Resolves all descendant group names recursively starting from root group names.
@@ -26,7 +27,7 @@ export function getDescendantGroupNames(allGroups, rootNames) {
 }
 
 const BUCKET_CACHE = new Map();
-const CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes TTL for stable ledger hierarchies
 
 /**
  * Loads company groups and categorizes all company ledgers into high-level accounting buckets:
@@ -41,9 +42,17 @@ export async function getCompanyLedgerBuckets(companyId) {
     return cached.data;
   }
 
-  const [allGroups, allLedgers] = await Promise.all([
-    Group.find({ company_id: companyId, is_deleted: { $ne: true } }).lean(),
-    Ledger.find({ company_id: companyId, is_deleted: { $ne: true } }).lean(),
+  const [allGroups, allLedgers, allBalanceDetails] = await Promise.all([
+    Group.find({ company_id: companyId, is_deleted: { $ne: true } })
+      .select("_id name parent company_id")
+      .lean(),
+    Ledger.find({ company_id: companyId, is_deleted: { $ne: true } })
+      .select("_id name parent classification opening_balance is_deemed_positive")
+      .lean(),
+    LedgerBalanceDetails.find({ company_id: companyId })
+      .select("ledger_id opening_balance is_deemed_positive from_date")
+      .sort({ from_date: 1 })
+      .lean(),
   ]);
 
   const salesGroups = getDescendantGroupNames(allGroups, ["Sales Accounts"]);
@@ -65,6 +74,20 @@ export async function getCompanyLedgerBuckets(companyId) {
   const dutiesAndTaxesGroups = getDescendantGroupNames(allGroups, ["Duties & Taxes", "Duties and Taxes"]);
   const liabilityGroups = getDescendantGroupNames(allGroups, ["Current Liabilities", "Provisions"]);
   const assetGroups = getDescendantGroupNames(allGroups, ["Current Assets", "Deposits (Asset)", "Loans & Advances (Asset)"]);
+
+  // Build raw opening balances map from LedgerBalanceDetails at earliest baseline date
+  const rawBalanceDetailsMap = new Map();
+  if (allBalanceDetails && allBalanceDetails.length > 0) {
+    const earliestFrom = allBalanceDetails[0].from_date;
+    for (const b of allBalanceDetails) {
+      if (String(b.from_date) === String(earliestFrom)) {
+        rawBalanceDetailsMap.set(b.ledger_id.toString(), {
+          raw: Number(b.opening_balance) || 0,
+          isDeemedPositive: b.is_deemed_positive,
+        });
+      }
+    }
+  }
 
   const buckets = {
     salesLedgerIds: new Set(),
@@ -93,11 +116,35 @@ export async function getCompanyLedgerBuckets(companyId) {
     const id = l._id.toString();
     const nameLower = (l.name || "").trim().toLowerCase();
 
+    const balDetail = rawBalanceDetailsMap.get(id);
+    let openingBalance = 0;
+    if (balDetail) {
+      const raw = balDetail.raw;
+      if (creditorGroups.has(p)) {
+        // Creditors (Sundry Creditors): raw > 0 is Credit (payable: +), raw < 0 is Debit (advance: -)
+        openingBalance = raw > 0 ? Math.abs(raw) : (raw < 0 ? -Math.abs(raw) : 0);
+      } else if (debtorGroups.has(p)) {
+        // Debtors (Sundry Debtors): raw < 0 or isDeemedPositive is Debit (receivable: +), raw > 0 is Credit (advance: -)
+        const isDebit = raw < 0 || balDetail.isDeemedPositive === true;
+        openingBalance = isDebit ? Math.abs(raw) : (raw !== 0 ? -Math.abs(raw) : 0);
+      } else if (cashGroups.has(p) || nameLower === "cash" || bankGroups.has(p) || nameLower.includes("bank")) {
+        // Bank / Cash: raw < 0 is Debit (asset cash/bank: +), raw > 0 is Credit (overdraft: -)
+        const isDebit = raw < 0;
+        openingBalance = isDebit ? Math.abs(raw) : (raw !== 0 ? -Math.abs(raw) : 0);
+      } else {
+        // Default standard Tally numeric convention: negative in Tally is Debit
+        const isDebit = raw < 0 || balDetail.isDeemedPositive === true;
+        openingBalance = isDebit ? Math.abs(raw) : (raw !== 0 ? -Math.abs(raw) : 0);
+      }
+    } else {
+      openingBalance = Number(l.opening_balance) || 0;
+    }
+
     buckets.ledgerMap.set(id, {
       id: l._id,
       name: l.name,
       parent: l.parent,
-      openingBalance: Number(l.opening_balance) || 0,
+      openingBalance,
       closingBalance: Number(l.closing_balance) || 0,
       gstin: l.gstin || null,
       stateCode: l.state_code || "27",
@@ -113,7 +160,8 @@ export async function getCompanyLedgerBuckets(companyId) {
     if (indirectIncomeGroups.has(p)) buckets.indirectIncomeLedgerIds.add(id);
 
     if (cashGroups.has(p) || nameLower === "cash") buckets.cashLedgerIds.add(id);
-    if (bankGroups.has(p) || nameLower.includes("bank")) buckets.bankLedgerIds.add(id);
+    const isBankExp = expenseGroups.has(p) || directExpGroups.has(p) || nameLower.includes("charge") || nameLower.includes("fee");
+    if (bankGroups.has(p) || (nameLower.includes("bank") && !isBankExp)) buckets.bankLedgerIds.add(id);
 
     if (debtorGroups.has(p)) buckets.debtorLedgerIds.add(id);
     if (creditorGroups.has(p)) buckets.creditorLedgerIds.add(id);

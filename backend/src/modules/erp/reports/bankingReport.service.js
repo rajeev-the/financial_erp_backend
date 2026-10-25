@@ -150,13 +150,19 @@ export async function getBankingAccountsReportService(params = {}) {
 
     const accountObj = {
       id: l.id,
+      ledger_id: l.id,
       name: l.name,
+      ledger_name: l.name,
       accountType: isBank ? "BANK" : "CASH",
       parentGroup: l.parent,
+      parent: l.parent,
       openingBalance: periodOpening,
       deposits: round2(deposits),
+      total_debit: round2(deposits),
       withdrawals: round2(withdrawals),
+      total_credit: round2(withdrawals),
       closingBalance: closing,
+      closing_balance: closing,
       isOverdrawn: closing < 0,
       transactionCount: p?.txCount || 0,
       lastTransactionDate: p?.lastDate || null,
@@ -185,6 +191,9 @@ export async function getBankingAccountsReportService(params = {}) {
       from_date: effectiveFrom || null,
       to_date: effectiveTo || null,
     },
+    total_bank_balance: round2(overallBankTotal),
+    total_cash_balance: round2(overallCashTotal),
+    total_balance: round2(overallBankTotal + overallCashTotal),
     liquiditySummary: {
       totalBankBalance: round2(overallBankTotal),
       totalCashBalance: round2(overallCashTotal),
@@ -197,5 +206,7 @@ export async function getBankingAccountsReportService(params = {}) {
     },
     bankAccounts,
     cashAccounts,
+    banks: bankAccounts,
+    cashes: cashAccounts,
   };
 }

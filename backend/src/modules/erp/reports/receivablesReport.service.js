@@ -166,7 +166,7 @@ export async function getReceivablesPartiesService(params = {}) {
     Object.assign(matchFilter, buildDateMatch(effectiveFrom, effectiveTo, "date"));
   }
 
-  // Single aggregate for transaction totals
+  // Single aggregate for transaction totals with voucher IDs
   const postings = await LedgerPosting.aggregate([
     { $match: matchFilter },
     {
@@ -175,6 +175,8 @@ export async function getReceivablesPartiesService(params = {}) {
         totalDebit: { $sum: "$debit" },
         totalCredit: { $sum: "$credit" },
         lastDate: { $max: "$date" },
+        voucherIds: { $addToSet: { $toString: "$voucherId" } },
+        vouchersCount: { $sum: 1 },
       },
     },
   ]);
@@ -194,6 +196,10 @@ export async function getReceivablesPartiesService(params = {}) {
 
   let partyList = [];
   let totalReceivableSum = 0;
+  let totalOpeningBalSum = 0;
+  let totalDebitSum = 0;
+  let totalCreditSum = 0;
+  let totalVouchersSum = 0;
 
   for (const id of buckets.debtorLedgerIds) {
     const l = buckets.ledgerMap.get(id);
@@ -223,6 +229,8 @@ export async function getReceivablesPartiesService(params = {}) {
     const dr = p ? p.totalDebit / 100 : 0;
     const cr = p ? p.totalCredit / 100 : 0;
     const netBalance = round2((l.openingBalance || 0) + (dr - cr));
+    const vIds = p?.voucherIds || [];
+    const vCount = p?.vouchersCount || vIds.length;
 
     // Balance status filter
     if (isOverdueOnly && netBalance <= 0) continue;
@@ -239,11 +247,21 @@ export async function getReceivablesPartiesService(params = {}) {
     if (maxBal !== null && netBalance > maxBal) continue;
 
     if (netBalance > 0) totalReceivableSum += netBalance;
+    totalOpeningBalSum += (l.openingBalance || 0);
+    totalDebitSum += dr;
+    totalCreditSum += cr;
+    totalVouchersSum += vCount;
 
     partyList.push({
       id: l.id,
+      ledger_id: l.id,
+      ledgerId: l.id,
       name: l.name,
+      party_name: l.name,
+      partyName: l.name,
       parent: l.parent,
+      parent_group: l.parent,
+      parentGroup: l.parent,
       gstin: l.gstin,
       stateCode: l.stateCode,
       phone: l.phone,
@@ -253,6 +271,21 @@ export async function getReceivablesPartiesService(params = {}) {
       currentBalance: netBalance,
       closingBalance: netBalance,
       lastTransactionDate: p?.lastDate || null,
+      receivable: {
+        opening_balance: l.openingBalance || 0,
+        debit: round2(dr),
+        credit: round2(cr),
+        net_change: round2(dr - cr),
+        closing_balance: netBalance,
+        net_receivable: netBalance,
+        status: netBalance > 0 ? "pending" : "cleared",
+      },
+      gst: { total_gst: 0, cgst: 0, sgst: 0, igst: 0, other_gst: 0, ledgers: [] },
+      tds: { total_tds: 0, tds_receivable: 0, ledgers: [] },
+      vouchers_count: vCount,
+      vouchersCount: vCount,
+      voucher_ids: vIds,
+      voucherIds: vIds,
     });
   }
 
@@ -283,11 +316,37 @@ export async function getReceivablesPartiesService(params = {}) {
   const paginated = partyList.slice(skip, skip + take);
 
   return {
+    company_id: targetCompanyId,
+    companyId: targetCompanyId,
+    company_name: company.name,
+    companyName: company.name,
     total,
     page: pageNum,
     limit: take,
     totalPages: Math.ceil(total / take) || 1,
+    total_pages: Math.ceil(total / take) || 1,
+    totalParties: total,
+    total_parties: total,
     totalReceivable: round2(totalReceivableSum),
+    total_receivable: round2(totalReceivableSum),
+    period: {
+      from_date: effectiveFrom || null,
+      to_date: effectiveTo || null,
+      fy: params.fy || params.financial_year || params.targetYear || null,
+    },
+    summary: {
+      receivable: {
+        total_receivable: round2(totalReceivableSum),
+        total_opening_balance: round2(totalOpeningBalSum),
+        total_debit: round2(totalDebitSum),
+        total_credit: round2(totalCreditSum),
+        closing_balance: round2(totalReceivableSum),
+      },
+      gst: { total_gst: 0, cgst: 0, sgst: 0, igst: 0, other_gst: 0 },
+      tds: { total_tds: 0, tds_receivable: 0 },
+      debtors_count: total,
+      vouchers_count: totalVouchersSum,
+    },
     parties: paginated,
   };
 }

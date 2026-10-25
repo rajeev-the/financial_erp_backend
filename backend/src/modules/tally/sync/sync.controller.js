@@ -20,6 +20,7 @@ import PurchaseAccount from "../purchase/purchaseAccount.schema.js";
 import TrialBalance from "../trialBalance/trialBalance.schema.js";
 import Receivable from "../receivables/receivable.schema.js";
 import Payable from "../payables/payable.schema.js";
+import { syncTallyVouchersToUnified } from "../../erp/sync/inboundTallySyncAdapter.service.js";
 import { ApiError } from "../../../utils/api-error.js";
 import { ok } from "../../../utils/response.js";
 import {
@@ -1185,6 +1186,13 @@ const saveVoucherToDb = async ({ data, company }) => {
         insertOps.push(InventoryEntry.insertMany(inventoryEntriesToInsert, { ordered: false }));
       }
       if (insertOps.length > 0) await Promise.all(insertOps);
+    }
+
+    // DUAL-WRITE: Sync vouchers to Unified ERP in real-time safely without blocking legacy response
+    try {
+      await syncTallyVouchersToUnified({ rawVouchers: data, companyId: company._id });
+    } catch (dualWriteErr) {
+      console.error("[DUAL-WRITE ERROR] Failed syncing vouchers to Unified ERP:", dualWriteErr.message);
     }
 
     return result;

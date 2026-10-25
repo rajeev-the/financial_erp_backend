@@ -1,6 +1,11 @@
-import {Schema ,model} from "mongoose";
+import { Schema, model } from "mongoose";
 import timeStampObj from "../../common/timestamps.object.js";
 import commonFields from "../../common/commonFields.object.js";
+
+/**
+ * @deprecated [PHASE 4 DEPRECATION NOTICE]
+ * This legacy schema (`inventoryentries`) is deprecated in favor of embedded items in `UnifiedVoucher` (`vouchers_unified`).
+ */
 const InventoryEntrySchema = new Schema(
     {
         voucher_id: { type: Schema.Types.ObjectId, ref: "Voucher" ,required:true},

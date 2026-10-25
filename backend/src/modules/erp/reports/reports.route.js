@@ -64,9 +64,11 @@ erpReportsRouter.get("/purchase/register/monthly/:companyId", getMonthlyPurchase
 erpReportsRouter.get("/purchase/register/month/:yearMonth/vouchers", getMonthlyPurchaseVouchersController);
 erpReportsRouter.get("/purchase/register/month/:yearMonth/vouchers/:companyId", getMonthlyPurchaseVouchersController);
 
-// Day Book
+// Day Book (GET and POST for payload queries such as voucher_ids)
 erpReportsRouter.get("/daybook", getDayBookController);
 erpReportsRouter.get("/daybook/:companyId", getDayBookController);
+erpReportsRouter.post("/daybook", getDayBookController);
+erpReportsRouter.post("/daybook/:companyId", getDayBookController);
 
 // Ledger Account Statement Drill-Down
 erpReportsRouter.get("/ledger/statement", getLedgerStatementController);

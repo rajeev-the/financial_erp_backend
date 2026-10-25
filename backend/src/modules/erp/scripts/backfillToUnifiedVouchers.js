@@ -68,6 +68,17 @@ export async function runBackfill(targetCompanyId) {
     let totalMigrated = 0;
     const startTime = Date.now();
 
+    const defaultSalesLedger = allLedgers.find(
+      (l) => (l.parent && l.parent.toLowerCase().includes("sales")) ||
+             (l.name && l.name.toLowerCase() === "sales") ||
+             (l.classification && l.classification.toLowerCase().includes("direct income"))
+    );
+    const defaultPurchaseLedger = allLedgers.find(
+      (l) => (l.parent && l.parent.toLowerCase().includes("purchase")) ||
+             (l.name && l.name.toLowerCase() === "purchase") ||
+             (l.classification && l.classification.toLowerCase().includes("direct expense"))
+    );
+
     for (let i = 0; i < totalVouchers; i += BATCH_SIZE) {
       const batchVouchers = oldVouchers.slice(i, i + BATCH_SIZE);
       const batchIds = batchVouchers.map((v) => v._id);
@@ -105,7 +116,7 @@ export async function runBackfill(targetCompanyId) {
       for (const ov of batchVouchers) {
         const vId = String(ov._id);
         const entries = entriesByVoucher.get(vId) || [];
-        if (entries.length < 2) continue;
+        if (entries.length < 1) continue;
 
         const dateStr = toDateStr(ov.date);
         const fy = getFinancialYear(dateStr);
@@ -139,14 +150,37 @@ export async function runBackfill(targetCompanyId) {
           });
         }
 
-        if (totalDebit !== totalCredit && mappedEntries.length >= 2) {
+        if (totalDebit !== totalCredit) {
           const diff = totalDebit - totalCredit;
           if (diff > 0) {
-            mappedEntries[1].credit += diff;
-            totalCredit += diff;
+            // Need more Credit
+            if (vType === "SALES" && defaultSalesLedger) {
+              mappedEntries.push({
+                ledgerId: defaultSalesLedger._id,
+                name: defaultSalesLedger.name,
+                debit: 0,
+                credit: diff,
+              });
+              totalCredit += diff;
+            } else if (mappedEntries.length >= 2) {
+              mappedEntries[1].credit += diff;
+              totalCredit += diff;
+            }
           } else {
-            mappedEntries[0].debit += Math.abs(diff);
-            totalDebit += Math.abs(diff);
+            // Need more Debit
+            const absDiff = Math.abs(diff);
+            if (vType === "PURCHASE" && defaultPurchaseLedger) {
+              mappedEntries.push({
+                ledgerId: defaultPurchaseLedger._id,
+                name: defaultPurchaseLedger.name,
+                debit: absDiff,
+                credit: 0,
+              });
+              totalDebit += absDiff;
+            } else if (mappedEntries.length >= 1) {
+              mappedEntries[0].debit += absDiff;
+              totalDebit += absDiff;
+            }
           }
         }
 

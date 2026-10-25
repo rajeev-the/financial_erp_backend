@@ -166,7 +166,7 @@ export async function getPayablesPartiesService(params = {}) {
     Object.assign(matchFilter, buildDateMatch(effectiveFrom, effectiveTo, "date"));
   }
 
-  // Single aggregate for transaction totals
+  // Single aggregate for transaction totals with voucher IDs
   const postings = await LedgerPosting.aggregate([
     { $match: matchFilter },
     {
@@ -175,6 +175,8 @@ export async function getPayablesPartiesService(params = {}) {
         totalDebit: { $sum: "$debit" },
         totalCredit: { $sum: "$credit" },
         lastDate: { $max: "$date" },
+        voucherIds: { $addToSet: { $toString: "$voucherId" } },
+        vouchersCount: { $sum: 1 },
       },
     },
   ]);
@@ -194,6 +196,10 @@ export async function getPayablesPartiesService(params = {}) {
 
   let partyList = [];
   let totalPayableSum = 0;
+  let totalOpeningBalSum = 0;
+  let totalDebitSum = 0;
+  let totalCreditSum = 0;
+  let totalVouchersSum = 0;
 
   for (const id of buckets.creditorLedgerIds) {
     const l = buckets.ledgerMap.get(id);
@@ -223,6 +229,8 @@ export async function getPayablesPartiesService(params = {}) {
     const dr = p ? p.totalDebit / 100 : 0;
     const cr = p ? p.totalCredit / 100 : 0;
     const netBalance = round2((l.openingBalance || 0) + (cr - dr));
+    const vIds = p?.voucherIds || [];
+    const vCount = p?.vouchersCount || vIds.length;
 
     // Balance status filter
     if (isOverdueOnly && netBalance <= 0) continue;
@@ -239,11 +247,21 @@ export async function getPayablesPartiesService(params = {}) {
     if (maxBal !== null && netBalance > maxBal) continue;
 
     if (netBalance > 0) totalPayableSum += netBalance;
+    totalOpeningBalSum += (l.openingBalance || 0);
+    totalDebitSum += dr;
+    totalCreditSum += cr;
+    totalVouchersSum += vCount;
 
     partyList.push({
       id: l.id,
+      ledger_id: l.id,
+      ledgerId: l.id,
       name: l.name,
+      party_name: l.name,
+      partyName: l.name,
       parent: l.parent,
+      parent_group: l.parent,
+      parentGroup: l.parent,
       gstin: l.gstin,
       stateCode: l.stateCode,
       phone: l.phone,
@@ -253,6 +271,21 @@ export async function getPayablesPartiesService(params = {}) {
       currentBalance: netBalance,
       closingBalance: netBalance,
       lastTransactionDate: p?.lastDate || null,
+      payable: {
+        opening_balance: l.openingBalance || 0,
+        debit: round2(dr),
+        credit: round2(cr),
+        net_change: round2(cr - dr),
+        closing_balance: netBalance,
+        net_payable: netBalance,
+        status: netBalance > 0 ? "pending" : "cleared",
+      },
+      gst: { total_gst: 0, cgst: 0, sgst: 0, igst: 0, other_gst: 0, ledgers: [] },
+      tds: { total_tds: 0, tds_payable: 0, ledgers: [] },
+      vouchers_count: vCount,
+      vouchersCount: vCount,
+      voucher_ids: vIds,
+      voucherIds: vIds,
     });
   }
 
@@ -282,11 +315,37 @@ export async function getPayablesPartiesService(params = {}) {
   const paginated = partyList.slice(skip, skip + take);
 
   return {
+    company_id: targetCompanyId,
+    companyId: targetCompanyId,
+    company_name: company.name,
+    companyName: company.name,
     total,
     page: pageNum,
     limit: take,
     totalPages: Math.ceil(total / take) || 1,
+    total_pages: Math.ceil(total / take) || 1,
+    totalParties: total,
+    total_parties: total,
     totalPayable: round2(totalPayableSum),
+    total_payable: round2(totalPayableSum),
+    period: {
+      from_date: effectiveFrom || null,
+      to_date: effectiveTo || null,
+      fy: params.fy || params.financial_year || params.targetYear || null,
+    },
+    summary: {
+      payable: {
+        total_payable: round2(totalPayableSum),
+        total_opening_balance: round2(totalOpeningBalSum),
+        total_debit: round2(totalDebitSum),
+        total_credit: round2(totalCreditSum),
+        closing_balance: round2(totalPayableSum),
+      },
+      gst: { total_gst: 0, cgst: 0, sgst: 0, igst: 0, other_gst: 0 },
+      tds: { total_tds: 0, tds_payable: 0 },
+      creditors_count: total,
+      vouchers_count: totalVouchersSum,
+    },
     parties: paginated,
   };
 }

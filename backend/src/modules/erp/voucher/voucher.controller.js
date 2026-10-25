@@ -112,22 +112,173 @@ export async function getVouchersListController(req, res, next) {
 }
 
 /**
- * GET /api/v1/erp/vouchers/:id
- * Fetches full voucher document by ID (zero joins needed!).
+/**
+ * GET /api/v1/erp/vouchers/:id or /api/v1/erp/vouchers/:companyId/:id
+ * Fetches full unified voucher document and formats it for Flutter mobile and API clients.
  */
 export async function getVoucherByIdController(req, res, next) {
   try {
-    const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw ApiError.badRequest("Invalid voucher ID");
+    const voucherId = req.params.id || req.params.voucherId;
+    const companyId = req.params.companyId || req.query.company_id || req.query.companyId;
+
+    if (!voucherId) {
+      throw ApiError.badRequest("Voucher ID is required");
     }
 
-    const voucher = await UnifiedVoucher.findById(id).lean();
+    const queryConditions = [
+      { "sync.tallyGuid": voucherId },
+      { voucherNumber: voucherId },
+    ];
+    if (mongoose.Types.ObjectId.isValid(voucherId)) {
+      queryConditions.unshift({ _id: new mongoose.Types.ObjectId(voucherId) });
+    }
+
+    const filter = { $or: queryConditions };
+    if (companyId && mongoose.Types.ObjectId.isValid(companyId)) {
+      filter.companyId = new mongoose.Types.ObjectId(companyId);
+    }
+
+    let voucher = await UnifiedVoucher.findOne(filter).lean();
+    if (!voucher && filter.companyId) {
+      voucher = await UnifiedVoucher.findOne({ $or: queryConditions }).lean();
+    }
+
     if (!voucher) {
       throw ApiError.notFound("Voucher not found");
     }
 
-    return ok(res, "Voucher fetched successfully", voucher);
+    // Calculate tax breakdown
+    let totalCgst = 0;
+    let totalSgst = 0;
+    let totalIgst = 0;
+    let totalCess = 0;
+
+    if (Array.isArray(voucher.items) && voucher.items.length > 0) {
+      for (const it of voucher.items) {
+        totalCgst += it.cgst || 0;
+        totalSgst += it.sgst || 0;
+        totalIgst += it.igst || 0;
+        totalCess += it.cess || 0;
+      }
+    }
+
+    if (totalCgst === 0 && totalSgst === 0 && totalIgst === 0 && Array.isArray(voucher.entries)) {
+      for (const ent of voucher.entries) {
+        const name = (ent.name || "").toUpperCase();
+        const amt = (ent.debit || 0) + (ent.credit || 0);
+        if (name.includes("CGST")) totalCgst += amt;
+        else if (name.includes("SGST")) totalSgst += amt;
+        else if (name.includes("IGST")) totalIgst += amt;
+        else if (name.includes("CESS")) totalCess += amt;
+      }
+    }
+
+    const taxBreakdown = {
+      cgst: Math.round(totalCgst) / 100,
+      sgst: Math.round(totalSgst) / 100,
+      igst: Math.round(totalIgst) / 100,
+      cess: Math.round(totalCess) / 100,
+      tds: 0,
+      tcs: 0,
+      other: 0,
+      total: Math.round(voucher.summary?.taxTotal || (totalCgst + totalSgst + totalIgst + totalCess)) / 100,
+    };
+
+    const grossAmount = Math.round(voucher.summary?.grandTotal || 0) / 100;
+    const netAmount = Math.round(voucher.summary?.subtotal || 0) / 100;
+    const taxAmount = Math.round(voucher.summary?.taxTotal || 0) / 100;
+
+    const billsAllocation = (voucher.allocations || []).map((a) => ({
+      bill_type: "Ref",
+      name: a.voucherNumber || voucher.voucherNumber,
+      amount: (a.amount || 0) / 100,
+    }));
+
+    const ledgerentries = (voucher.entries || []).map((e) => {
+      const isDr = (e.debit || 0) > 0;
+      const signedAmt = isDr ? (e.debit / 100) : -(e.credit / 100);
+      const absAmt = (isDr ? e.debit : e.credit) / 100;
+      const isParty = String(e.ledgerId) === String(voucher.party?.ledgerId) ||
+        (voucher.party?.name && e.name?.toLowerCase().trim() === voucher.party?.name?.toLowerCase().trim());
+
+      return {
+        ledger_name: e.name || "General Ledger",
+        ledgerName: e.name || "General Ledger",
+        ledger_id: e.ledgerId,
+        amount: signedAmt,
+        abs_amount: absAmt,
+        absAmount: absAmt,
+        is_deemed_positive: isDr,
+        isDeemedPositive: isDr,
+        is_party_ledger: isParty,
+        isPartyLedger: isParty,
+        bills_allocation: isParty ? billsAllocation : [],
+      };
+    });
+
+    const inventoryentries = (voucher.items || []).map((item, idx) => ({
+      line_number: idx + 1,
+      stock_item_name: item.name || "Item",
+      stockItemName: item.name || "Item",
+      quantity: `${item.qty || 0} ${item.unit || "PCS"}`.trim(),
+      rate: String(((item.rate || 0) / 100).toFixed(2)),
+      amount: (item.total || item.taxableValue || 0) / 100,
+      discount_amount: (item.discount || 0) / 100,
+      discount_percentage: item.discountPct || 0,
+      gst_rate: item.taxRate || 0,
+      cgst_amount: (item.cgst || 0) / 100,
+      sgst_amount: (item.sgst || 0) / 100,
+      igst_amount: (item.igst || 0) / 100,
+      cess_amount: (item.cess || 0) / 100,
+      accounting_amount: (item.taxableValue || item.total || 0) / 100,
+      accounting_isdeemedpositive: true,
+      accountingIsDeemedPositive: true,
+    }));
+
+    const formattedVoucher = {
+      ...voucher,
+      id: voucher._id.toString(),
+      _id: voucher._id.toString(),
+      guid: voucher.sync?.tallyGuid || voucher._id.toString(),
+      currency: voucher.currency || "INR",
+      date: voucher.date,
+      voucher_number: voucher.voucherNumber,
+      voucherNumber: voucher.voucherNumber,
+      voucher_type: voucher.voucherType,
+      voucherType: voucher.voucherType,
+      voucher_type_parent: voucher.voucherType,
+      voucherTypeParent: voucher.voucherType,
+      party_ledger_name: voucher.party?.name || "",
+      partyLedgerName: voucher.party?.name || "",
+      party_gstin: voucher.party?.gstin || "",
+      partyGstin: voucher.party?.gstin || "",
+      place_of_supply: voucher.gst?.placeOfSupply || "",
+      placeOfSupply: voucher.gst?.placeOfSupply || "",
+      narration: voucher.narration || "",
+      is_cancelled: voucher.status === "CANCELLED",
+      isCancelled: voucher.status === "CANCELLED",
+      is_invoiced: true,
+      isInvoiced: true,
+      is_optional: false,
+      isOptional: false,
+      amount: grossAmount,
+      gross_amount: grossAmount,
+      grossAmount: grossAmount,
+      net_amount: netAmount,
+      netAmount: netAmount,
+      tax_amount: taxAmount,
+      taxAmount: taxAmount,
+      tax_breakdown: taxBreakdown,
+      taxBreakdown: taxBreakdown,
+      ledgerentries,
+      ledgerEntries: ledgerentries,
+      ledger_entries: ledgerentries,
+      inventoryentries,
+      inventoryEntries: inventoryentries,
+      inventory_entries: inventoryentries,
+    };
+
+    return ok(res, "Voucher fetched successfully", formattedVoucher);
   } catch (err) {
     next(err);
   }
@@ -139,14 +290,14 @@ export async function getVoucherByIdController(req, res, next) {
  */
 export async function cancelVoucherController(req, res, next) {
   try {
-    const { id } = req.params;
+    const voucherId = req.params.id || req.params.voucherId;
     const { reason } = req.body;
 
     if (!reason || !reason.trim()) {
       throw ApiError.badRequest("Cancellation reason is mandatory");
     }
 
-    const voucher = await UnifiedVoucher.findById(id);
+    const voucher = await UnifiedVoucher.findById(voucherId);
     if (!voucher) {
       throw ApiError.notFound("Voucher not found");
     }

@@ -2,6 +2,12 @@ import { Schema, model } from "mongoose";
 import commonFields from "../../common/commonFields.object.js";
 import timeStampObj from "../../common/timestamps.object.js";
 
+/**
+ * @deprecated [PHASE 4 DEPRECATION NOTICE]
+ * This legacy schema (`vouchers`) is deprecated in favor of `UnifiedVoucher` (`vouchers_unified`).
+ * Direct queries to this table should be redirected to `vouchers_unified` and `ledger_postings`.
+ * This collection is currently maintained via dual-write and will be made read-only / removed in Phase 5.
+ */
 const voucherSchema = new Schema(
   {
     company_id: {
